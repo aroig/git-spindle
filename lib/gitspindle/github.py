@@ -730,9 +730,10 @@ class GitHub(GitSpindle):
         repo = self.repository(opts)
         for issue in opts['<issue>']:
             issue = repo.issue(issue)
+            pr = issue.pull_request()
             print(wrap(issue.title, attr.bright, attr.underline))
             print(issue.body)
-            print(issue.pull_request and issue.pull_request['html_url'] or issue.html_url)
+            print(pr and pr.html_url or issue.html_url)
         if not opts['<issue>']:
             body = """
 # Reporting an issue on %s/%s
@@ -776,7 +777,8 @@ class GitHub(GitSpindle):
                 continue
             print(wrap("Issues for %s/%s" % (repo.owner.login, repo.name), attr.bright))
             for issue in issues:
-                url = issue.pull_request and issue.pull_request['html_url'] or issue.html_url
+                pr = issue.pull_request()
+                url = pr and pr.html_url or issue.html_url
                 print("[%d] %s %s" % (issue.number, issue.title, url))
 
     @command
