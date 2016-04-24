@@ -356,8 +356,13 @@ class GitHub(GitSpindle):
 
     @command
     def check_pages(self, opts):
-        """\nCheck the github pages configuration and content of your repo"""
+        """[<repo>] [--parent]
+           Check the github pages configuration and content of your repo"""
         repo = self.repository(opts)
+
+        if opts['<repo>']:
+            self.clone(opts)
+            os.chdir(repo.name)
 
         def warning(msg, url=None):
             print(wrap(msg, fgcolor.yellow))
@@ -378,7 +383,7 @@ class GitHub(GitSpindle):
 #            error("You should not have capital letters in your repository name, please rename it from %s to %s" % (repo.name, repo.name.lower()))
 
         # Which branch do we check?
-        if repo.name.lower() in (repo.owner.login.lower() + '.github.com', repo.owner.login + '.github.io'):
+        if repo.name.lower() in (repo.owner.login.lower() + '.github.com', repo.owner.login.lower() + '.github.io'):
             branchname = 'master'
         else:
             branchname = 'gh-pages'
@@ -390,7 +395,7 @@ class GitHub(GitSpindle):
         # Do we have a pages branch?
         local = remote_tracking = remote = None
 
-        output = self.git('ls-remote', repo.remote, 'refs/heads/%s' % branchname).stdout
+        output = self.git('ls-remote', repo.remote or 'origin', 'refs/heads/%s' % branchname).stdout
         for line in output.splitlines():
             remote = line.split()[0]
         if not remote:
@@ -398,7 +403,7 @@ class GitHub(GitSpindle):
                   "https://help.github.com/articles/user-organization-and-project-pages/")
 
         output = self.git('for-each-ref', '--format=%(refname) %(objectname) %(upstream:trackshort)',
-                          'refs/remotes/%s/%s' % (repo.remote, branchname),
+                          'refs/remotes/%s/%s' % (repo.remote or 'origin', branchname),
                           'refs/heads/%s' % branchname,).stdout
         for line in output.splitlines():
             if line.startswith('refs/heads'):
@@ -472,7 +477,7 @@ class GitHub(GitSpindle):
                                 if rr.rdtype == dns.rdatatype.A and rr.address not in pages_ips:
                                     error("IP address %s is incorreect for a pages site, use only %s" % (rr.address, ', '.join(pages_ips)),
                                           "https://help.github.com/articles/tips-for-configuring-a-cname-record-with-your-dns-provider/")
-                                if rr.rdtype == 'CNAME' and rr.target != '%s.github.io.' % repo.owner.login:
+                                if rr.rdtype == dns.rdatatype.CNAME and rr.target != '%s.github.io.' % repo.owner.login:
                                     error("CNAME %s -> %s is incorrect, should be %s -> %s" % (name, rr.target, name, '%s.github.io.' % repo.owner.login),
                                           "https://help.github.com/articles/tips-for-configuring-an-a-record-with-your-dns-provider/")
                 except ImportError:
@@ -496,7 +501,7 @@ class GitHub(GitSpindle):
 
     @command
     def clone(self, opts, repo=None):
-        """[--ssh|--http|--git] [--parent] [git-clone-options] <repo> [<dir>]
+        """[--ssh|--http|--git] [--triangular] [--parent] [git-clone-options] <repo> [<dir>]
            Clone a repository by name"""
         if not repo:
             repo = self.repository(opts)
@@ -632,7 +637,7 @@ class GitHub(GitSpindle):
 
     @command
     def fork(self, opts):
-        """[--ssh|--http|--git] [<repo>]
+        """[--ssh|--http|--git] [--triangular] [<repo>]
            Fork a repo and clone it"""
         do_clone = bool(opts['<repo>'])
         repo = self.repository(opts)
@@ -1130,9 +1135,9 @@ class GitHub(GitSpindle):
             err("You don't have %s/%s configured as a remote repository" % (parent.owner.login, parent.name))
 
         # How many commits?
+        accept_empty_body = False
         commits = try_decode(self.gitm('log', '--pretty=%H', '%s/%s..%s' % (remote, dst, src)).stdout).strip().split()
         commits.reverse()
-        # 1: title/body from commit
         if not commits:
             err("Your branch has no commits yet")
         # Are we turning an issue into a commit?
@@ -1140,12 +1145,15 @@ class GitHub(GitSpindle):
             pull = parent.create_pull_from_issue(base=dst, head='%s:%s' % (repo.owner.login, src), issue=int(opts['--issue']))
             print("Pull request %d created %s" % (pull.number, pull.html_url))
             return
+
+        # 1 commit: title/body from commit
         if len(commits) == 1:
             title, body = self.gitm('log', '--pretty=%s\n%b', '%s^..%s' % (commits[0], commits[0])).stdout.split('\n', 1)
             title = title.strip()
             body = body.strip()
+            accept_empty_body = not bool(body)
 
-        # More: title from branchname (titlecased, s/-/ /g), body comments from shortlog
+        # More commits: title from branchname (titlecased, s/-/ /g), body comments from shortlog
         else:
             title = src
             if '/' in title:
@@ -1162,7 +1170,7 @@ class GitHub(GitSpindle):
         body += "\n# " + try_decode(self.gitm('shortlog', '%s/%s..%s' % (remote, dst, src)).stdout).strip().replace('\n', '\n# ')
         body += "\n#\n# " + try_decode(self.gitm('diff', '--stat', '%s^..%s' % (commits[0], commits[-1])).stdout).strip().replace('\n', '\n#')
         title, body = self.edit_msg("%s\n\n%s" % (title,body), 'PULL_REQUEST_EDIT_MSG')
-        if not body:
+        if not body and not accept_empty_body:
             err("No pull request message specified")
 
         try:
@@ -1349,7 +1357,7 @@ class GitHub(GitSpindle):
 
     @command
     def set_origin(self, opts, repo=None, remote='origin'):
-        """[--ssh|--http|--git]
+        """[--ssh|--http|--git] [--triangular]
            Set the remote 'origin' to github.
            If this is a fork, set the remote 'upstream' to the parent"""
         if not repo:
@@ -1390,13 +1398,7 @@ class GitHub(GitSpindle):
         if remote != 'origin':
             return
 
-        for branch in self.git('for-each-ref', 'refs/heads/**').stdout.strip().splitlines():
-            branch = branch.split(None, 2)[-1][11:]
-            if self.git('for-each-ref', 'refs/remotes/origin/%s' % branch).stdout.strip():
-                if self.git('config', 'branch.%s.remote' % branch).returncode != 0:
-                    print("Marking %s as remote-tracking branch" % branch)
-                    self.gitm('config', 'branch.%s.remote' % branch, 'origin')
-                    self.gitm('config', 'branch.%s.merge' % branch, 'refs/heads/%s' % branch)
+        self.set_tracking_branches(remote, upstream="upstream", triangular=opts['--triangular'])
 
     @command
     def status(self, opts):
@@ -1473,7 +1475,7 @@ class GitHub(GitSpindle):
             else:
                 keys = user.keys()
             for pkey in keys:
-                algo, key = pkey.key.split()
+                algo, key = pkey.key.split()[:2]
                 algo = algo[4:].upper()
                 if pkey.title:
                     print("%s key%s...%s (%s)" % (algo, ' ' * (6 - len(algo)), key[-10:], pkey.title))
