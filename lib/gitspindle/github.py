@@ -132,10 +132,10 @@ class GitHub(GitSpindle):
         template = template.lower()
         contents = None
         for dir in ('/', '/.github/'):
-            files = repo.contents(dir)
+            files = repo.directory_contents(dir)
             if not files:
                 continue
-            files = dict([(x[0].lower(), x[1]) for x in files.items()])
+            files = dict([(k.lower(), v) for k, v in files])
 
             if template in files:
                 contents = files[template]
